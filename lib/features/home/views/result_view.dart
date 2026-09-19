@@ -142,7 +142,7 @@ class _ResultViewState extends State<ResultView> {
               ),
             ],
 
-            // كارت ملخص الرحلة - تتحول الإحصائيات لشبكة مقسمة عند تضييق الشاشة
+            // كارت ملخص الرحلة
             Container(
               padding: const EdgeInsets.all(12),
               margin: const EdgeInsets.all(8),
@@ -248,7 +248,7 @@ class _ResultViewState extends State<ResultView> {
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                         decoration: BoxDecoration(
                           color: color.withValues(alpha: 0.25),
                           borderRadius: BorderRadius.circular(8),
@@ -257,16 +257,23 @@ class _ResultViewState extends State<ResultView> {
                         child: Row(
                           children: [
                             Expanded(
-                              child: Text(
-                                'اتجاه ${segment.directionNameAr}',
-                                textAlign: TextAlign.right,
-                                style: const TextStyle(color: Colors.white70, fontSize: 11),
+                              child: FittedBox(
+                                alignment: Alignment.centerRight,
+                                fit: BoxFit.scaleDown,
+                                child: Text(
+                                  'اتجاه ${segment.directionNameAr}',
+                                  textAlign: TextAlign.right,
+                                  style: const TextStyle(color: Colors.white70, fontSize: 11),
+                                ),
                               ),
                             ),
-                            const SizedBox(width: 6),
-                            Text(
-                              lineName,
-                              style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 13),
+                            const SizedBox(width: 4),
+                            FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Text(
+                                lineName,
+                                style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12),
+                              ),
                             ),
                           ],
                         ),
