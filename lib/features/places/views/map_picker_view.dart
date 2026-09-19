@@ -76,7 +76,7 @@ class _MapPickerViewState extends State<MapPickerView> {
     return Colors.grey;
   }
 
-  Future<void> _onPointSelected(lat_lng.LatLng latLng, {String? placeName}) async {
+  Future<void> _onPointSelected(lat_lng.LatLng latLng, {String? placeName, String? formattedAddress, bool isFromSearch = false}) async {
     setState(() {
       _selectedLatLng = latLng;
       _isLoading = true;
@@ -88,10 +88,14 @@ class _MapPickerViewState extends State<MapPickerView> {
         longitude: latLng.longitude,
       );
 
+      final String resolvedName = placeName ?? 'نقطة على الخريطة';
+      final String resolvedAddress = formattedAddress ?? (placeName != null ? 'منطقة $placeName' : 'إحداثيات (${latLng.latitude.toStringAsFixed(4)}, ${latLng.longitude.toStringAsFixed(4)})');
+
       final place = PlaceResult(
-        name: placeName ?? 'موقع على الخريطة',
+        name: resolvedName,
         latitude: latLng.latitude,
         longitude: latLng.longitude,
+        formattedAddress: resolvedAddress,
       );
 
       setState(() {
@@ -99,7 +103,8 @@ class _MapPickerViewState extends State<MapPickerView> {
         _selectedPlace = place;
       });
 
-      if (nearest.station.nameAr.isNotEmpty) {
+      // حفظ في السجل فقط إذا كان بحثاً ناجحاً وصحيحاً من شريط البحث
+      if (isFromSearch && nearest.station.nameAr.isNotEmpty) {
         await _historyService.savePlaceSearch(place);
       }
     } on SocketException {
@@ -112,14 +117,14 @@ class _MapPickerViewState extends State<MapPickerView> {
       });
     }
   }
-Future<void> _searchPlace(String query) async {
+
+  Future<void> _searchPlace(String query) async {
     final trimmed = query.trim();
     if (trimmed.isEmpty) return;
 
     FocusScope.of(context).unfocus();
     setState(() {
       _isLoading = true;
-      // تفريغ النتائج والموقع القديم فوراً عند بدء أي بحث جديد
       _selectedLatLng = null;
       _selectedPlace = null;
       _nearestStationResult = null;
@@ -128,15 +133,31 @@ Future<void> _searchPlace(String query) async {
     try {
       final results = await _placesService.geocodeQuery(trimmed);
       
-      // التحقق الصريح: هل القائمة تحتوي على نتائج حقيقية؟
       if (results.isNotEmpty) {
         final place = results.first;
+        
+        // التحقق لمنع الكلمات العشوائية الوهمية على الهاتف
+        if (!trimmed.contains(' ') && trimmed.length > 5) {
+          final cleanQuery = trimmed.toLowerCase();
+          final cleanName = place.name.toLowerCase();
+          final cleanAddress = (place.formattedAddress ?? '').toLowerCase();
+          if (!cleanName.contains(cleanQuery) && !cleanAddress.contains(cleanQuery)) {
+            _showAppSnackbar('عذراً', 'لا يوجد مكان بهذا الاسم. تأكد من كتابة اسم صحيح.');
+            setState(() => _isLoading = false);
+            return;
+          }
+        }
+
         final newLatLng = lat_lng.LatLng(place.latitude, place.longitude);
 
         _mapController.move(newLatLng, 15.0);
-        await _onPointSelected(newLatLng, placeName: place.name);
+        await _onPointSelected(
+          newLatLng, 
+          placeName: place.name, 
+          formattedAddress: place.formattedAddress, 
+          isFromSearch: true,
+        );
       } else {
-        // إذا كان البحث عشوائياً أو فارغاً: إظهار رسالة الخطأ فوراً للمستخدم
         _showAppSnackbar('عذراً', 'لا يوجد مكان بهذا الاسم. تأكد من كتابة اسم صحيح.');
       }
     } on AppFailure catch (failure) {
@@ -226,7 +247,12 @@ Future<void> _searchPlace(String query) async {
                                 Get.back();
                                 final latLng = lat_lng.LatLng(place.latitude, place.longitude);
                                 _mapController.move(latLng, 15.0);
-                                _onPointSelected(latLng, placeName: place.name);
+                                _onPointSelected(
+                                  latLng, 
+                                  placeName: place.name, 
+                                  formattedAddress: place.formattedAddress,
+                                  isFromSearch: false,
+                                );
                               },
                               child: Padding(
                                 padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
@@ -318,7 +344,7 @@ Future<void> _searchPlace(String query) async {
             options: MapOptions(
               initialCenter: _defaultCenter,
               initialZoom: 13.0,
-              onTap: (tapPosition, point) => _onPointSelected(point),
+              onTap: (tapPosition, point) => _onPointSelected(point, isFromSearch: false),
             ),
             children: [
               TileLayer(
@@ -336,7 +362,7 @@ Future<void> _searchPlace(String query) async {
                       child: GestureDetector(
                         onTap: () {
                           final stLatLng = lat_lng.LatLng(station.latitude, station.longitude);
-                          _onPointSelected(stLatLng, placeName: 'محطة ${station.nameAr}');
+                          _onPointSelected(stLatLng, placeName: 'محطة ${station.nameAr}', isFromSearch: false);
                         },
                         child: Container(
                           decoration: BoxDecoration(
@@ -424,32 +450,57 @@ Future<void> _searchPlace(String query) async {
                         mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
+                          // عرض العنوان التفصيلي الكامل والواضح للمكان بخط بارز
                           Text(
-                            _selectedPlace?.name ?? 'الموقع المحدد',
-                            style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                            _selectedPlace?.formattedAddress ?? _selectedPlace?.name ?? 'الموقع المحدد',
+                            style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
                             textAlign: TextAlign.right,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          const SizedBox(height: 8),
-                          const Text('أقرب محطة مترو متاحة', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                          const SizedBox(height: 12),
+                          const Text('أقرب محطة مترو', style: TextStyle(color: Colors.white54, fontSize: 11)),
                           const SizedBox(height: 2),
                           Row(
                             mainAxisAlignment: MainAxisAlignment.end,
                             children: [
                               Flexible(
                                 child: Text(
-                                  _nearestStationResult?.station.nameAr ?? 'جاري الحساب...',
-                                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                                  // التحقق البرمجي: إذا كانت المسافة أكبر من 20 كم، يظهر "خارج نطاق شبكة المترو"
+                                  (_nearestStationResult != null && _nearestStationResult!.distanceMeters > 20000)
+                                      ? 'خارج نطاق شبكة المترو'
+                                      : (_nearestStationResult?.station.nameAr ?? 'جاري الحساب...'),
+                                  style: TextStyle(
+                                    color: (_nearestStationResult != null && _nearestStationResult!.distanceMeters > 20000)
+                                        ? Colors.orangeAccent
+                                        : Colors.white,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
                               const SizedBox(width: 8),
-                              const Icon(Icons.directions_subway, color: Colors.blue, size: 22),
+                              Icon(
+                                (_nearestStationResult != null && _nearestStationResult!.distanceMeters > 20000)
+                                    ? Icons.warning_amber_rounded
+                                    : Icons.directions_subway,
+                                color: (_nearestStationResult != null && _nearestStationResult!.distanceMeters > 20000)
+                                    ? Colors.orangeAccent
+                                    : Colors.blue,
+                                size: 20,
+                              ),
                             ],
                           ),
                           if (_nearestStationResult != null)
-                            Text(
-                              'المسافة تقريباً ${_nearestStationResult!.distanceLabelAr}',
-                              style: const TextStyle(color: Colors.lightBlueAccent, fontSize: 13),
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                (_nearestStationResult!.distanceMeters > 20000)
+                                    ? 'هذا الموقع بعيد جداً عن خطوط المترو'
+                                    : 'المسافة تقريباً ${_nearestStationResult!.distanceLabelAr}',
+                                style: const TextStyle(color: Colors.lightBlueAccent, fontSize: 12),
+                              ),
                             ),
                           const SizedBox(height: 16),
                           Row(

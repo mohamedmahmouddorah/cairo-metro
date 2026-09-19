@@ -200,12 +200,12 @@ class PlacesService {
     }
   }
 
-  /// بحث جغرافي دقيق وصارم يمنع النتائج العشوائية أو الوهمية على الهواتف وسطح المكتب
+  /// بحث جغرافي شامل لجميع مناطق مصر مع منع الكلمات والرموز العشوائية الوهمية
   Future<List<PlaceResult>> geocodeQuery(String query) async {
     final trimmed = query.trim();
     if (trimmed.length < 2) return const [];
 
-    // قاموس المصطلحات الشعبية الصحيحة فقط
+    // قاموس المصطلحات الشعبية والشهيرة لتسهيل الوصول الفوري
     final Map<String, String> popularAliases = {
       'محطة القطار': 'محطة مصر رمسيس',
       'محطة القطر': 'محطة مصر رمسيس',
@@ -214,6 +214,8 @@ class PlacesService {
       'القطر': 'محطة مصر رمسيس',
       'موقف عبود': 'موقف عبود القومي',
       'الموقف': 'موقف عبود القومي',
+      'عباس العقاد': 'شارع عباس العقاد مدينة نصر',
+      'شارع عباس العقاد': 'شارع عباس العقاد مدينة نصر',
     };
 
     String enhancedQuery = trimmed;
@@ -224,7 +226,7 @@ class PlacesService {
     });
 
     try {
-      final formattedSearch = "$enhancedQuery, مصر";
+      final formattedSearch = enhancedQuery.contains('مصر') ? enhancedQuery : "$enhancedQuery, مصر";
 
       final uri = Uri.parse(
         'https://nominatim.openstreetmap.org/search?'
@@ -254,15 +256,7 @@ class PlacesService {
             final displayName = item['display_name']?.toString() ?? '';
             
             if (lat != 0.0 && lon != 0.0 && displayName.isNotEmpty) {
-              // 1. فلتر المسافة الصارم: ألا تبعد النتيجة أكثر من 60 كم عن مركز القاهرة الكبرى لمنع ظهور المحافظات الأخرى
-              final distanceFromCairo = Geolocator.distanceBetween(
-                AppConstants.cairoLat, AppConstants.cairoLng, lat, lon,
-              );
-              if (distanceFromCairo > 60000) { 
-                continue;
-              }
-
-              // 2. الفحص الصارم للكلمات العشوائية الوهمية على الهواتف
+              // منع الحروف العشوائية العبثية والمتلاصقة تماماً (مثل لبابلباية تنصايو)
               final nameParts = displayName.split(',');
               final mainName = nameParts.first.trim();
 
@@ -270,10 +264,9 @@ class PlacesService {
               final normalizedMain = _normalizeArabic(mainName.toLowerCase());
               final normalizedDisplay = _normalizeArabic(displayName.toLowerCase());
 
-              // إذا كانت الكلمة عبثية ومتلاصقة وطويلة ولا توجد أي مطابقة حقيقية في اسم المكان أو العنوان، تُرفض فوراً
               if (!trimmed.contains(' ') && trimmed.length > 5) {
                 if (!normalizedMain.contains(normalizedTrimmed) && !normalizedDisplay.contains(normalizedTrimmed)) {
-                  continue; 
+                  continue; // تجاهل النتائج الوهمية العشوائية
                 }
               }
 
