@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 
@@ -41,23 +40,6 @@ class PlacesService {
         .trim();
   }
 
-  /// توليد الصيغ المختلفة للكلمة بكفاءة عالية في الذاكرة
-  List<String> _generateQueryVariants(String query) {
-    final trimmed = query.trim();
-    if (trimmed.isEmpty) return const [];
-
-    final normalized = _normalizeArabic(trimmed);
-    final Set<String> variants = {trimmed, normalized};
-
-    if (trimmed.endsWith('ه')) {
-      variants.add('${trimmed.substring(0, trimmed.length - 1)}ة');
-    } else if (trimmed.endsWith('ة')) {
-      variants.add('${trimmed.substring(0, trimmed.length - 1)}ه');
-    }
-
-    return variants.toList(growable: false);
-  }
-
   /// اقتراحات أوتوكومبليت عبر Google Places API
   Future<List<PlaceSuggestion>> searchSuggestions(String query) async {
     final trimmed = query.trim();
@@ -75,7 +57,7 @@ class PlacesService {
         'key': AppConfig.googleMapsApiKey,
         'components': 'country:eg',
         'location': '${AppConstants.cairoLat},${AppConstants.cairoLng}',
-        'radius': '50000', // نطاق 50 كم يغطي القاهرة ومنافذ الدلتا
+        'radius': '50000',
         'language': 'ar',
       });
 
@@ -217,7 +199,8 @@ class PlacesService {
       );
     }
   }
-/// بحث جغرافي دقيق وصارم يمنع النتائج العشوائية أو البعيدة عن القاهرة الكبرى
+
+  /// بحث جغرافي دقيق وصارم يمنع النتائج العشوائية أو الوهمية على الهواتف وسطح المكتب
   Future<List<PlaceResult>> geocodeQuery(String query) async {
     final trimmed = query.trim();
     if (trimmed.length < 2) return const [];
@@ -271,23 +254,26 @@ class PlacesService {
             final displayName = item['display_name']?.toString() ?? '';
             
             if (lat != 0.0 && lon != 0.0 && displayName.isNotEmpty) {
-              // 1. فلتر المسافة الصارم: ألا تبعد النتيجة أكثر من 70 كم عن مركز القاهرة الكبرى (لتجنب نتائج أسيوط أو المحافظات البعيدة عن المترو)
+              // 1. فلتر المسافة الصارم: ألا تبعد النتيجة أكثر من 60 كم عن مركز القاهرة الكبرى لمنع ظهور المحافظات الأخرى
               final distanceFromCairo = Geolocator.distanceBetween(
                 AppConstants.cairoLat, AppConstants.cairoLng, lat, lon,
               );
-              if (distanceFromCairo > 70000) { // أكثر من 70 كيلومتراً تعتبر بعيدة جداً عن النطاق
+              if (distanceFromCairo > 60000) { 
                 continue;
               }
 
-              // 2. فحص الحروف العشوائية المتلاصقة (مثل الكلمات العبثية)
+              // 2. الفحص الصارم للكلمات العشوائية الوهمية على الهواتف
               final nameParts = displayName.split(',');
               final mainName = nameParts.first.trim();
 
+              final normalizedTrimmed = _normalizeArabic(trimmed.toLowerCase());
+              final normalizedMain = _normalizeArabic(mainName.toLowerCase());
+              final normalizedDisplay = _normalizeArabic(displayName.toLowerCase());
+
+              // إذا كانت الكلمة عبثية ومتلاصقة وطويلة ولا توجد أي مطابقة حقيقية في اسم المكان أو العنوان، تُرفض فوراً
               if (!trimmed.contains(' ') && trimmed.length > 5) {
-                final normalizedTrimmed = _normalizeArabic(trimmed.toLowerCase());
-                final normalizedMain = _normalizeArabic(mainName.toLowerCase());
-                if (!normalizedMain.contains(normalizedTrimmed) && !normalizedTrimmed.contains(normalizedMain)) {
-                  continue; // رفض الكلمة العشوائية الوهمية
+                if (!normalizedMain.contains(normalizedTrimmed) && !normalizedDisplay.contains(normalizedTrimmed)) {
+                  continue; 
                 }
               }
 
@@ -336,7 +322,7 @@ class PlacesService {
     }
   }
 
-  /// حساب مسافة المشي بالمتار عبر Google Directions API
+  /// حساب مسافة المشي بالأمتار عبر Google Directions API
   Future<int?> walkingDistanceMeters({
     required double originLat,
     required double originLng,
