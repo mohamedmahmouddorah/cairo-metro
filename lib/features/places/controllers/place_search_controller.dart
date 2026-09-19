@@ -56,7 +56,11 @@ class PlaceSearchController extends GetxController {
   }
 
   Future<void> _loadHistory() async {
-    placeHistory.assignAll(await _historyService.getPlaceHistory());
+    try {
+      placeHistory.assignAll(await _historyService.getPlaceHistory());
+    } catch (_) {
+      // التعامل الصامت مع خطأ تحميل الهيستوري محلياً لو الجهاز غير متصل أو فشل القراءة
+    }
   }
 
   void onQueryChanged(String value) {
@@ -92,11 +96,19 @@ class PlaceSearchController extends GetxController {
       _lastQuery = trimmed;
       suggestions.assignAll(results);
       if (results.isEmpty) {
-        errorMessage.value = AppFailure.noPlaceResults.userMessageAr;
+        errorMessage.value = 'عذراً، لا يوجد مكان بهذا الاسم. يرجى التأكد من كتابة اسم صحيح.';
       }
     } on AppFailure catch (failure) {
       suggestions.clear();
-      errorMessage.value = failure.userMessageAr;
+      // هندلة خطأ انقطاع الإنترنت أو الأخطاء الأخرى بشكل احترافي للموبايل والويندوز
+      if (failure.kind == AppFailureKind.network) {
+        errorMessage.value = 'لا يوجد اتصال بالإنترنت. يرجى التحقق من الشبكة للمتابعة.';
+      } else {
+        errorMessage.value = failure.userMessageAr;
+      }
+    } catch (_) {
+      suggestions.clear();
+      errorMessage.value = 'حدث خطأ في الاتصال. تأكد من تفعيل الإنترنت أو استخدم السجل المحفوظ.';
     } finally {
       isSearching.value = false;
     }
@@ -118,7 +130,6 @@ class PlaceSearchController extends GetxController {
       );
       await _applyPlace(currentPlace);
     } on AppFailure catch (failure) {
-      // توجيه تلقائي للإعدادات بدون إظهار أخطاء مسدودة
       if (failure.kind == AppFailureKind.locationDisabled) {
         await _locationService.openLocationSettings();
       } else if (failure.kind == AppFailureKind.permissionDenied ||
@@ -127,6 +138,8 @@ class PlaceSearchController extends GetxController {
       } else {
         errorMessage.value = failure.userMessageAr;
       }
+    } catch (_) {
+      errorMessage.value = 'تعذر الحصول على موقعك الحالي، تأكد من تفعيل الـ GPS.';
     } finally {
       isResolving.value = false;
     }
@@ -145,7 +158,13 @@ class PlaceSearchController extends GetxController {
       );
       await _applyPlace(place);
     } on AppFailure catch (failure) {
-      errorMessage.value = failure.userMessageAr;
+      if (failure.kind == AppFailureKind.network) {
+        errorMessage.value = 'لا يوجد اتصال بالإنترنت لجلب تفاصيل هذا المكان.';
+      } else {
+        errorMessage.value = failure.userMessageAr;
+      }
+    } catch (_) {
+      errorMessage.value = 'حدث خطأ غير متوقع، تحقق من اتصالك بالإنترنت.';
     } finally {
       isResolving.value = false;
     }
@@ -167,48 +186,63 @@ class PlaceSearchController extends GetxController {
 
       final results = await _placesService.geocodeQuery(trimmed);
       if (results.isEmpty) {
-        errorMessage.value = AppFailure.noPlaceResults.userMessageAr;
+        errorMessage.value = 'عذراً، البحث العشوائي أو الخاطئ لا يطابق أي مكان. أعد المحاولة باسم صحيح.';
+        isResolving.value = false;
         return;
       }
 
       await _applyPlace(results.first);
     } on AppFailure catch (failure) {
-      errorMessage.value = failure.userMessageAr;
+      if (failure.kind == AppFailureKind.network) {
+        errorMessage.value = 'لا يمكن البحث لعدم وجود اتصال بالإنترنت.';
+      } else {
+        errorMessage.value = failure.userMessageAr;
+      }
+    } catch (_) {
+      errorMessage.value = 'تأكد من الاتصال بالإنترنت أو صحة الكلمة المدخلة.';
     } finally {
       isResolving.value = false;
     }
   }
 
   Future<void> selectHistory(PlaceResult place) async {
+    // هذه الدالة تسمح بالعمل أوفلاين تماماً من خلال السجل المحفوظ مسبقاً على الجهاز
     await _applyPlace(place);
   }
 
   Future<void> clearHistory() async {
-    await _historyService.clearPlaceHistory();
-    placeHistory.clear();
+    try {
+      await _historyService.clearPlaceHistory();
+      placeHistory.clear();
+    } catch (_) {}
   }
 
   Future<void> _applyPlace(PlaceResult place) async {
     selectedPlace.value = place;
     
-    final nearestResult = await _nearestStationService.findNearest(
-      latitude: place.latitude,
-      longitude: place.longitude,
-    );
+    try {
+      final nearestResult = await _nearestStationService.findNearest(
+        latitude: place.latitude,
+        longitude: place.longitude,
+      );
 
-    nearest.value = nearestResult;
+      nearest.value = nearestResult;
 
-    // فحص شرط تجاوز الـ 20 كيلومتر (20,000 متر) مباشرة من المسافة الحسابية
-    if (nearestResult.distanceMeters > 20000.0) {
-      final distanceKm = (nearestResult.distanceMeters / 1000).toStringAsFixed(1);
-      outOfCoverageWarning.value =
-          'الموقع خارج نطاق المترو المباشر. أقرب محطة هي ${nearestResult.station.nameAr} وتبعد $distanceKm كم.';
-    } else {
-      outOfCoverageWarning.value = null;
+      // فحص شرط تجاوز الـ 20 كيلومتر (20,000 متر) مباشرة من المسافة الحسابية
+      if (nearestResult.distanceMeters > 20000.0) {
+        final distanceKm = (nearestResult.distanceMeters / 1000).toStringAsFixed(1);
+        outOfCoverageWarning.value =
+            'الموقع خارج نطاق المترو المباشر. أقرب محطة هي ${nearestResult.station.nameAr} وتبعد $distanceKm كم.';
+      } else {
+        outOfCoverageWarning.value = null;
+      }
+
+      // حفظ عملية البحث بنجاح محلياً لكي تظهر في الـ History وتعمل أوفلاين لاحقاً
+      await _historyService.savePlaceSearch(place);
+      await _loadHistory();
+    } catch (_) {
+      errorMessage.value = 'تعذر حساب أقرب محطة مترو لهذا المكان.';
     }
-
-    await _historyService.savePlaceSearch(place);
-    await _loadHistory();
   }
 
   Future<void> openPlaceOnMap() async {

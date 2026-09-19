@@ -1,7 +1,10 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:get/get.dart';
 import 'package:latlong2/latlong.dart' as lat_lng;
+import '../../../core/errors/app_failure.dart';
+import '../../../core/services/history_service.dart';
 import '../../../core/services/nearest_station_service.dart';
 import '../../../core/services/places_service.dart';
 import '../../../data/metro_data.dart';
@@ -20,38 +23,59 @@ class MapPickerView extends StatefulWidget {
 class _MapPickerViewState extends State<MapPickerView> {
   final NearestStationService _nearestStationService = Get.find<NearestStationService>();
   final PlacesService _placesService = Get.find<PlacesService>();
+  final HistoryService _historyService = Get.find<HistoryService>();
   final HomeController _homeController = Get.find<HomeController>();
 
   final MapController _mapController = MapController();
   final TextEditingController _searchController = TextEditingController();
 
-  // مركز وسط البلد / القاهرة كإحداثيات افتراضية لفتح الخريطة فقط دون تحديد محطة مسبقة
   final lat_lng.LatLng _defaultCenter = const lat_lng.LatLng(30.0444, 31.2357);
 
   lat_lng.LatLng? _selectedLatLng;
   NearestStationResult? _nearestStationResult;
   PlaceResult? _selectedPlace;
-  bool _isLoading = false; // تبدأ false لكي لا تعرض لودينغ أو محطة افتراضية عند الفتح
+  bool _isLoading = false;
 
-  @override
-  void initState() {
-    super.initState();
-    // تم إلغاء _getUserCurrentLocation() تماماً من هنا لكي تفتح الخريطة نظيفة بدون أي تحديد مسبق أو محطة افتراضية مثل السادات
+  void _showAppSnackbar(String title, String message, {bool isError = true}) {
+    Get.snackbar(
+      title,
+      message,
+      backgroundColor: const Color(0xFF2A2D34),
+      colorText: Colors.white,
+      titleText: Text(
+        title,
+        style: TextStyle(
+          color: isError ? Colors.redAccent : Colors.blueAccent,
+          fontWeight: FontWeight.bold,
+          fontSize: 14,
+        ),
+      ),
+      messageText: Text(
+        message,
+        style: const TextStyle(color: Colors.white70, fontSize: 12),
+      ),
+      icon: Icon(
+        isError ? Icons.error_outline : Icons.check_circle_outline,
+        color: isError ? Colors.redAccent : Colors.blueAccent,
+      ),
+      snackPosition: SnackPosition.BOTTOM,
+      margin: const EdgeInsets.all(12),
+      borderRadius: 12,
+      duration: const Duration(seconds: 3),
+    );
   }
 
-  /// تحديد لون الدائرة بحسب الخط التابع له المحطة
   Color _getStationColor(MetroStation station) {
     if (station.lineIds.contains(1)) {
-      return const Color(0xFF2563EB); // أزرق للخط الأول
+      return const Color(0xFF2563EB);
     } else if (station.lineIds.contains(2)) {
-      return const Color(0xFFEF4444); // أحمر للخط الثاني
+      return const Color(0xFFEF4444);
     } else if (station.lineIds.contains(3)) {
-      return const Color(0xFF10B981); // أخضر للخط الثالث
+      return const Color(0xFF10B981);
     }
     return Colors.grey;
   }
 
-  /// دالة معالجة تحديد النقطة على الخريطة لحساب أقرب محطة مترو
   Future<void> _onPointSelected(lat_lng.LatLng latLng, {String? placeName}) async {
     setState(() {
       _selectedLatLng = latLng;
@@ -64,44 +88,203 @@ class _MapPickerViewState extends State<MapPickerView> {
         longitude: latLng.longitude,
       );
 
+      final place = PlaceResult(
+        name: placeName ?? 'موقع على الخريطة',
+        latitude: latLng.latitude,
+        longitude: latLng.longitude,
+      );
+
       setState(() {
         _nearestStationResult = nearest;
-        _selectedPlace = PlaceResult(
-          name: placeName ?? 'موقع على الخريطة',
-          latitude: latLng.latitude,
-          longitude: latLng.longitude,
-        );
+        _selectedPlace = place;
       });
+
+      if (nearest.station.nameAr.isNotEmpty) {
+        await _historyService.savePlaceSearch(place);
+      }
+    } on SocketException {
+      _showAppSnackbar('خطأ في الاتصال', 'لا يوجد اتصال بالإنترنت. يرجى التحقق من الشبكة.');
     } catch (_) {
-      // تجاهل الأخطاء الصامتة
+      _showAppSnackbar('تنبيه', 'تعذر حساب أقرب محطة لهذا الموقع.');
     } finally {
       setState(() {
         _isLoading = false;
       });
     }
   }
-
-  /// دالة البحث عن مكان داخل الخريطة
-  Future<void> _searchPlace(String query) async {
-    if (query.trim().isEmpty) return;
+Future<void> _searchPlace(String query) async {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) return;
 
     FocusScope.of(context).unfocus();
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      // تفريغ النتائج والموقع القديم فوراً عند بدء أي بحث جديد
+      _selectedLatLng = null;
+      _selectedPlace = null;
+      _nearestStationResult = null;
+    });
 
     try {
-      final results = await _placesService.geocodeQuery(query);
+      final results = await _placesService.geocodeQuery(trimmed);
+      
+      // التحقق الصريح: هل القائمة تحتوي على نتائج حقيقية؟
       if (results.isNotEmpty) {
         final place = results.first;
         final newLatLng = lat_lng.LatLng(place.latitude, place.longitude);
 
         _mapController.move(newLatLng, 15.0);
         await _onPointSelected(newLatLng, placeName: place.name);
+      } else {
+        // إذا كان البحث عشوائياً أو فارغاً: إظهار رسالة الخطأ فوراً للمستخدم
+        _showAppSnackbar('عذراً', 'لا يوجد مكان بهذا الاسم. تأكد من كتابة اسم صحيح.');
       }
+    } on AppFailure catch (failure) {
+      _showAppSnackbar('خطأ', failure.userMessageAr);
+    } on SocketException {
+      _showAppSnackbar('خطأ في الاتصال', 'لا يوجد اتصال بالإنترنت للمتابعة.');
     } catch (_) {
-      // تجاهل الأخطاء الصامتة
+      _showAppSnackbar('تنبيه', 'حدث خطأ أثناء البحث. تأكد من صحة الكلمة المدخلة.');
     } finally {
       setState(() => _isLoading = false);
     }
+  }
+
+  Future<void> _showSearchHistoryBottomSheet() async {
+    await Get.bottomSheet(
+      StatefulBuilder(
+        builder: (context, setStateModal) {
+          return FutureBuilder<List<PlaceResult>>(
+            future: _historyService.getPlaceHistory(),
+            builder: (context, snapshot) {
+              final history = snapshot.data ?? [];
+
+              return Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+                decoration: const BoxDecoration(
+                  color: Color(0xFF1E1E1E),
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        if (history.isNotEmpty)
+                          GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () async {
+                              await _historyService.clearPlaceHistory();
+                              setStateModal(() {});
+                              _showAppSnackbar('السجل', 'تم مسح الكل بنجاح.', isError: false);
+                            },
+                            child: const Text(
+                              'مسح الكل',
+                              style: TextStyle(
+                                color: Colors.redAccent,
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          )
+                        else
+                          const SizedBox.shrink(),
+                        const Text(
+                          'سجل البحث',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    const Divider(color: Colors.white24, thickness: 1),
+                    if (history.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 40),
+                        child: Center(
+                          child: Text(
+                            'لا توجد عمليات بحث محفوظة محلياً بعد',
+                            style: TextStyle(color: Colors.white54, fontSize: 13),
+                          ),
+                        ),
+                      )
+                    else
+                      Flexible(
+                        child: ListView.separated(
+                          shrinkWrap: true,
+                          itemCount: history.length,
+                          separatorBuilder: (context, index) => const Divider(color: Colors.white12, height: 16),
+                          itemBuilder: (context, index) {
+                            final place = history[index];
+                            return InkWell(
+                              borderRadius: BorderRadius.circular(12),
+                              onTap: () {
+                                Get.back();
+                                final latLng = lat_lng.LatLng(place.latitude, place.longitude);
+                                _mapController.move(latLng, 15.0);
+                                _onPointSelected(latLng, placeName: place.name);
+                              },
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
+                                child: Row(
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 22),
+                                      tooltip: 'حذف العنصر',
+                                      onPressed: () async {
+                                        await _historyService.deletePlaceHistoryItem(place);
+                                        setStateModal(() {});
+                                      },
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.end,
+                                        children: [
+                                          Text(
+                                            place.name,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                            textAlign: TextAlign.right,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            place.formattedAddress ?? place.name,
+                                            style: const TextStyle(
+                                              color: Colors.white54,
+                                              fontSize: 12,
+                                            ),
+                                            textAlign: TextAlign.right,
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
   }
 
   void _applySelection({required bool asStart}) {
@@ -130,7 +313,6 @@ class _MapPickerViewState extends State<MapPickerView> {
       ),
       body: Stack(
         children: [
-          // 1. الخريطة التفاعلية مع رسم الدوائر الملونة للمحطات
           FlutterMap(
             mapController: _mapController,
             options: MapOptions(
@@ -143,8 +325,6 @@ class _MapPickerViewState extends State<MapPickerView> {
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.cairometro.app',
               ),
-
-              // طبقة محطات المترو كدوائر ملونة
               MarkerLayer(
                 markers: [
                   ...MetroData.stations.map((station) {
@@ -171,8 +351,6 @@ class _MapPickerViewState extends State<MapPickerView> {
                       ),
                     );
                   }),
-
-                  // ماركر الموقع المحدد من المستخدم (يظهر فقط إذا تم الضغط أو البحث)
                   if (_selectedLatLng != null)
                     Marker(
                       point: _selectedLatLng!,
@@ -188,14 +366,12 @@ class _MapPickerViewState extends State<MapPickerView> {
               ),
             ],
           ),
-
-          // 2. شريط البحث العلوي التفاعلي
           Positioned(
             top: 12,
             left: 12,
             right: 12,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
               decoration: BoxDecoration(
                 color: const Color(0xFF2A2D34),
                 borderRadius: BorderRadius.circular(12),
@@ -203,14 +379,19 @@ class _MapPickerViewState extends State<MapPickerView> {
               ),
               child: Row(
                 children: [
+                  IconButton(
+                    icon: const Icon(Icons.history, color: Colors.white70),
+                    tooltip: 'سجل البحث',
+                    onPressed: _showSearchHistoryBottomSheet,
+                  ),
                   Expanded(
                     child: TextField(
                       controller: _searchController,
                       style: const TextStyle(color: Colors.white),
                       textAlign: TextAlign.right,
                       decoration: const InputDecoration(
-                        hintText: 'مثال: عباس العقاد، المتحف المصري...',
-                        hintStyle: TextStyle(color: Colors.white54, fontSize: 13),
+                        hintText: 'ابحث عن مكان (مثل: نادي السكة)...',
+                        hintStyle: TextStyle(color: Colors.white54, fontSize: 12),
                         border: InputBorder.none,
                       ),
                       onSubmitted: _searchPlace,
@@ -224,8 +405,6 @@ class _MapPickerViewState extends State<MapPickerView> {
               ),
             ),
           ),
-
-          // 3. كارت العرض السفلي - يظهر فقط بعد اختيار المستخدم لمكان أو محطة على الخريطة
           if (_selectedLatLng != null)
             Positioned(
               bottom: 20,

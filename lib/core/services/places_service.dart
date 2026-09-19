@@ -217,92 +217,107 @@ class PlacesService {
       );
     }
   }
-
-  /// بحث جغرافي ذكي محسّن يمنع التشتت والربط العشوائي بين المحافظات
+/// بحث جغرافي دقيق وصارم يمنع النتائج العشوائية أو البعيدة عن القاهرة الكبرى
   Future<List<PlaceResult>> geocodeQuery(String query) async {
     final trimmed = query.trim();
     if (trimmed.length < 2) return const [];
 
-    final variants = _generateQueryVariants(trimmed);
+    // قاموس المصطلحات الشعبية الصحيحة فقط
+    final Map<String, String> popularAliases = {
+      'محطة القطار': 'محطة مصر رمسيس',
+      'محطة القطر': 'محطة مصر رمسيس',
+      'محطة مصر': 'محطة مصر رمسيس',
+      'القطار': 'محطة مصر رمسيس',
+      'القطر': 'محطة مصر رمسيس',
+      'موقف عبود': 'موقف عبود القومي',
+      'الموقف': 'موقف عبود القومي',
+    };
+
+    String enhancedQuery = trimmed;
+    popularAliases.forEach((alias, target) {
+      if (_normalizeArabic(trimmed).contains(_normalizeArabic(alias))) {
+        enhancedQuery = target;
+      }
+    });
 
     try {
-      for (final variant in variants) {
-        // 1. استخدام صيغة بحث مرنة تعتمد على الدولة "مصر" لعدم تقييد القادمين من الأقاليم بالقاهرة فقط
-        final formattedSearch = "$variant, مصر";
+      final formattedSearch = "$enhancedQuery, مصر";
 
-        final uri = Uri.parse(
-          'https://nominatim.openstreetmap.org/search?'
-          'q=${Uri.encodeComponent(formattedSearch)}'
-          '&format=json'
-          '&addressdetails=1'
-          '&limit=10'
-          '&countrycodes=eg'
-          // حصر مربع العرض ليشمل شبكة القليوبية والدلتا ومداخل القاهرة
-          '&viewbox=30.0,31.8,32.0,29.5'
-          '&bounded=0'
-        );
+      final uri = Uri.parse(
+        'https://nominatim.openstreetmap.org/search?'
+        'q=${Uri.encodeComponent(formattedSearch)}'
+        '&format=json'
+        '&addressdetails=1'
+        '&limit=5'
+        '&countrycodes=eg'
+      );
 
-        final response = await _client.get(
-          uri,
-          headers: {'User-Agent': 'CairoMetroApp/1.0 (contact@cairometro.app)'},
-        ).timeout(const Duration(seconds: 8));
+      final response = await _client.get(
+        uri,
+        headers: {
+          'User-Agent': 'CairoMetroApp/1.0 (contact@cairometro.app)',
+          'Accept-Language': 'ar',
+        },
+      ).timeout(const Duration(seconds: 8));
 
-        if (response.statusCode == 200) {
-          final List decoded = jsonDecode(response.body);
-          if (decoded.isNotEmpty) {
-            final validResults = <PlaceResult>[];
+      if (response.statusCode == 200) {
+        final List decoded = jsonDecode(response.body);
+        if (decoded.isNotEmpty) {
+          final validResults = <PlaceResult>[];
 
-            for (final item in decoded) {
-              final lat = double.tryParse(item['lat'].toString()) ?? 0.0;
-              final lon = double.tryParse(item['lon'].toString()) ?? 0.0;
-              final displayName = item['display_name']?.toString() ?? trimmed;
-
-              if (lat != 0.0 && lon != 0.0) {
-                final nameParts = displayName.split(',');
-                final mainName = nameParts.first.trim();
-
-                validResults.add(
-                  PlaceResult(
-                    name: mainName.isNotEmpty ? mainName : trimmed,
-                    latitude: lat,
-                    longitude: lon,
-                    formattedAddress: displayName,
-                  ),
-                );
+          for (final item in decoded) {
+            final lat = double.tryParse(item['lat'].toString()) ?? 0.0;
+            final lon = double.tryParse(item['lon'].toString()) ?? 0.0;
+            final displayName = item['display_name']?.toString() ?? '';
+            
+            if (lat != 0.0 && lon != 0.0 && displayName.isNotEmpty) {
+              // 1. فلتر المسافة الصارم: ألا تبعد النتيجة أكثر من 70 كم عن مركز القاهرة الكبرى (لتجنب نتائج أسيوط أو المحافظات البعيدة عن المترو)
+              final distanceFromCairo = Geolocator.distanceBetween(
+                AppConstants.cairoLat, AppConstants.cairoLng, lat, lon,
+              );
+              if (distanceFromCairo > 70000) { // أكثر من 70 كيلومتراً تعتبر بعيدة جداً عن النطاق
+                continue;
               }
-            }
 
-            if (validResults.isNotEmpty) {
-              // فرز النتائج حسب القرب من مركز الخدمة الحسابي للشبكة
-              validResults.sort((a, b) {
-                final distA = Geolocator.distanceBetween(
-                    AppConstants.cairoLat, AppConstants.cairoLng, a.latitude, a.longitude);
-                final distB = Geolocator.distanceBetween(
-                    AppConstants.cairoLat, AppConstants.cairoLng, b.latitude, b.longitude);
-                return distA.compareTo(distB);
-              });
+              // 2. فحص الحروف العشوائية المتلاصقة (مثل الكلمات العبثية)
+              final nameParts = displayName.split(',');
+              final mainName = nameParts.first.trim();
 
-              return validResults;
+              if (!trimmed.contains(' ') && trimmed.length > 5) {
+                final normalizedTrimmed = _normalizeArabic(trimmed.toLowerCase());
+                final normalizedMain = _normalizeArabic(mainName.toLowerCase());
+                if (!normalizedMain.contains(normalizedTrimmed) && !normalizedTrimmed.contains(normalizedMain)) {
+                  continue; // رفض الكلمة العشوائية الوهمية
+                }
+              }
+
+              final fullAddress = nameParts.length > 2 
+                  ? '${nameParts[0].trim()}, ${nameParts[1].trim()}, ${nameParts[2].trim()}'
+                  : displayName;
+
+              validResults.add(
+                PlaceResult(
+                  name: mainName.isNotEmpty ? mainName : trimmed,
+                  latitude: lat,
+                  longitude: lon,
+                  formattedAddress: fullAddress,
+                ),
+              );
             }
+          }
+
+          if (validResults.isNotEmpty) {
+            validResults.sort((a, b) {
+              final distA = Geolocator.distanceBetween(
+                  AppConstants.cairoLat, AppConstants.cairoLng, a.latitude, a.longitude);
+              final distB = Geolocator.distanceBetween(
+                  AppConstants.cairoLat, AppConstants.cairoLng, b.latitude, b.longitude);
+              return distA.compareTo(distB);
+            });
+
+            return validResults;
           }
         }
-      }
-
-      // 2. المحاولة الثانية كـ Fallback باستخدام الجيوكود الخاص بالمنصة
-      for (final variant in variants) {
-        try {
-          final locations = await locationFromAddress('$variant, Egypt');
-          if (locations.isNotEmpty) {
-            return locations.take(5).map((location) {
-              return PlaceResult(
-                name: trimmed,
-                latitude: location.latitude,
-                longitude: location.longitude,
-                formattedAddress: '$trimmed، مصر',
-              );
-            }).toList(growable: false);
-          }
-        } catch (_) {}
       }
 
       return const [];
