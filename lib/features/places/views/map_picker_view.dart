@@ -103,8 +103,8 @@ class _MapPickerViewState extends State<MapPickerView> {
         _selectedPlace = place;
       });
 
-      // حفظ في السجل فقط إذا كان بحثاً ناجحاً وصحيحاً من شريط البحث
-      if (isFromSearch && nearest.station.nameAr.isNotEmpty) {
+      // حفظ في السجل فقط إذا كان بحثاً من الشاشة وكان الموقع داخل النطاق المقبول (أقل من أو يساوي 20 كم)
+      if (isFromSearch && nearest.station.nameAr.isNotEmpty && nearest.distanceMeters <= 20000) {
         await _historyService.savePlaceSearch(place);
       }
     } on SocketException {
@@ -129,6 +129,20 @@ class _MapPickerViewState extends State<MapPickerView> {
       _selectedPlace = null;
       _nearestStationResult = null;
     });
+
+    // معالجة حالة البحث عن كلمة "مصر" أو "القاهرة" لتوجه نحو وسط العاصمة ومحطة الشهداء تلقائياً
+    if (trimmed.toLowerCase() == 'مصر' || trimmed.toLowerCase() == 'egypt' || trimmed.toLowerCase() == 'القاهرة' || trimmed.toLowerCase() == 'cairo') {
+      const cairoCenter = lat_lng.LatLng(30.0478, 31.2465); // إحداثيات رمزيّة بجوار وسط البلد ومحطة الشهداء
+      _mapController.move(cairoCenter, 15.0);
+      await _onPointSelected(
+        cairoCenter,
+        placeName: 'القاهرة (وسط البلد)',
+        formattedAddress: 'محافظة القاهرة، مصر',
+        isFromSearch: true,
+      );
+      setState(() => _isLoading = false);
+      return;
+    }
 
     try {
       final results = await _placesService.geocodeQuery(trimmed);
@@ -315,6 +329,11 @@ class _MapPickerViewState extends State<MapPickerView> {
 
   void _applySelection({required bool asStart}) {
     if (_nearestStationResult != null && _selectedPlace != null) {
+      if (_nearestStationResult!.distanceMeters > 20000) {
+        _showAppSnackbar('تنبيه', 'الموقع المحدد خارج نطاق تغطية شبكة المترو.');
+        return;
+      }
+
       _homeController.applyPlaceAsStation(
         _selectedPlace!,
         _nearestStationResult!,
@@ -326,6 +345,8 @@ class _MapPickerViewState extends State<MapPickerView> {
 
   @override
   Widget build(BuildContext context) {
+    final bool isOutOfRange = _nearestStationResult != null && _nearestStationResult!.distanceMeters > 20000;
+
     return Scaffold(
       backgroundColor: const Color(0xFF1E1E1E),
       appBar: AppBar(
@@ -450,7 +471,6 @@ class _MapPickerViewState extends State<MapPickerView> {
                         mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
-                          // عرض العنوان التفصيلي الكامل والواضح للمكان بخط بارز
                           Text(
                             _selectedPlace?.formattedAddress ?? _selectedPlace?.name ?? 'الموقع المحدد',
                             style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
@@ -466,14 +486,11 @@ class _MapPickerViewState extends State<MapPickerView> {
                             children: [
                               Flexible(
                                 child: Text(
-                                  // التحقق البرمجي: إذا كانت المسافة أكبر من 20 كم، يظهر "خارج نطاق شبكة المترو"
-                                  (_nearestStationResult != null && _nearestStationResult!.distanceMeters > 20000)
+                                  isOutOfRange
                                       ? 'خارج نطاق شبكة المترو'
                                       : (_nearestStationResult?.station.nameAr ?? 'جاري الحساب...'),
                                   style: TextStyle(
-                                    color: (_nearestStationResult != null && _nearestStationResult!.distanceMeters > 20000)
-                                        ? Colors.orangeAccent
-                                        : Colors.white,
+                                    color: isOutOfRange ? Colors.orangeAccent : Colors.white,
                                     fontSize: 16,
                                     fontWeight: FontWeight.bold,
                                   ),
@@ -482,12 +499,8 @@ class _MapPickerViewState extends State<MapPickerView> {
                               ),
                               const SizedBox(width: 8),
                               Icon(
-                                (_nearestStationResult != null && _nearestStationResult!.distanceMeters > 20000)
-                                    ? Icons.warning_amber_rounded
-                                    : Icons.directions_subway,
-                                color: (_nearestStationResult != null && _nearestStationResult!.distanceMeters > 20000)
-                                    ? Colors.orangeAccent
-                                    : Colors.blue,
+                                isOutOfRange ? Icons.warning_amber_rounded : Icons.directions_subway,
+                                color: isOutOfRange ? Colors.orangeAccent : Colors.blue,
                                 size: 20,
                               ),
                             ],
@@ -496,46 +509,66 @@ class _MapPickerViewState extends State<MapPickerView> {
                             Padding(
                               padding: const EdgeInsets.only(top: 2),
                               child: Text(
-                                (_nearestStationResult!.distanceMeters > 20000)
+                                isOutOfRange
                                     ? 'هذا الموقع بعيد جداً عن خطوط المترو'
                                     : 'المسافة تقريباً ${_nearestStationResult!.distanceLabelAr}',
                                 style: const TextStyle(color: Colors.lightBlueAccent, fontSize: 12),
                               ),
                             ),
                           const SizedBox(height: 16),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: ElevatedButton(
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: const Color(0xFF2563EB),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                    padding: const EdgeInsets.symmetric(vertical: 12),
-                                  ),
-                                  onPressed: () => _applySelection(asStart: false),
-                                  child: const FittedBox(
-                                    fit: BoxFit.scaleDown,
-                                    child: Text('استخدم كوجهة', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                                  ),
+                          if (isOutOfRange)
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                              decoration: BoxDecoration(
+                                color: Colors.orangeAccent.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: Colors.orangeAccent.withValues(alpha: 0.4)),
+                              ),
+                              child: const Text(
+                                'لا يمكن تحديد هذا المكان كبداية أو وجهة لأنه خارج نطاق الخدمة',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Colors.orangeAccent,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
                                 ),
                               ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: OutlinedButton(
-                                  style: OutlinedButton.styleFrom(
-                                    side: const BorderSide(color: Colors.blue),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                    padding: const EdgeInsets.symmetric(vertical: 12),
-                                  ),
-                                  onPressed: () => _applySelection(asStart: true),
-                                  child: const FittedBox(
-                                    fit: BoxFit.scaleDown,
-                                    child: Text('استخدم كبداية', style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold)),
+                            )
+                          else
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: ElevatedButton(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF2563EB),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                    ),
+                                    onPressed: () => _applySelection(asStart: false),
+                                    child: const FittedBox(
+                                      fit: BoxFit.scaleDown,
+                                      child: Text('استخدم كوجهة', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                                    ),
                                   ),
                                 ),
-                              ),
-                            ],
-                          ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: OutlinedButton(
+                                    style: OutlinedButton.styleFrom(
+                                      side: const BorderSide(color: Colors.blue),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                    ),
+                                    onPressed: () => _applySelection(asStart: true),
+                                    child: const FittedBox(
+                                      fit: BoxFit.scaleDown,
+                                      child: Text('استخدم كبداية', style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold)),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                         ],
                       ),
               ),
